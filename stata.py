@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 СТАТИСТИКА КЦ — ФИНАЛЬНЫЙ БОТ
-Версия: 13.0 | Звонки, Дозвон, СМС, Входяшки
+Версия: 14.0 | Дозвон = среднее арифметическое
 """
 import asyncio
 import datetime
@@ -239,18 +239,18 @@ def archive_and_clear_stats() -> int:
         if stat_date == today:
             continue
         
-        if stat_date and data.get('zvonki', 0) > 0:
+        if stat_date and (data.get('zvonki', 0) > 0 or data.get('calls', 0) > 0):
             if stat_date not in history:
                 history[stat_date] = {}
             history[stat_date][str(user_id)] = {
-                "zvonki": data.get('zvonki', 0),
-                "dozvon": data.get('dozvon', 0),
-                "sms": data.get('sms', 0),
+                "zvonki": data.get('zvonki', data.get('calls', 0)),
+                "dozvon": data.get('dozvon', data.get('connect', 0)),
+                "sms": data.get('sms', data.get('smart', 0)),
                 "vkhodyashki": data.get('vkhodyashki', 0),
                 "name": get_manager_name(user_id)
             }
         
-        if stat_date == yesterday and data.get('zvonki', 0) > 0:
+        if stat_date == yesterday and (data.get('zvonki', 0) > 0 or data.get('calls', 0) > 0):
             if user_id not in attendance_log:
                 attendance_log[user_id] = {"last_active_date": yesterday, "active_days": []}
             if yesterday not in attendance_log[user_id].get('active_days', []):
@@ -658,9 +658,14 @@ async def show_managers(message: Message) -> None:
     for uid, info in approved.items():
         status = "✅" if info.get("active", True) else "❌"
         data = stats.get(uid, {})
+        zvonki = data.get('zvonki', data.get('calls', 0))
+        dozvon = data.get('dozvon', data.get('connect', 0))
+        sms = data.get('sms', data.get('smart', 0))
+        vkhodyashki = data.get('vkhodyashki', 0)
+        
         text += (
             f"{status} <b>{info['name']}</b>\n"
-            f"   📞{data.get('zvonki', 0)} 📊{data.get('dozvon', 0)}% 📱{data.get('sms', 0)} 📥{data.get('vkhodyashki', 0)}\n"
+            f"   📞{zvonki} 📊{dozvon}% 📱{sms} 📥{vkhodyashki}\n"
             f"   🕐 {data.get('last_update', 'никогда')}\n\n"
         )
     
@@ -702,7 +707,7 @@ async def show_history(message: Message) -> None:
         for uid_str, data in history[date].items():
             text += (
                 f"👤 {data.get('name', uid_str)}\n"
-                f"   📞{data['zvonki']} 📊{data['dozvon']}% 📱{data['sms']} 📥{data['vkhodyashki']}\n"
+                f"   📞{data.get('zvonki', 0)} 📊{data.get('dozvon', 0)}% 📱{data.get('sms', 0)} 📥{data.get('vkhodyashki', 0)}\n"
             )
         await message.answer(text)
 
@@ -813,17 +818,39 @@ async def show_stats(message: Message) -> None:
     text = "📊 <b>ТЕКУЩАЯ СТАТИСТИКА</b>\n\n"
     has_data = False
     
+    total_zvonki = 0
+    total_sms = 0
+    total_vkhodyashki = 0
+    dozvon_sum = 0
+    dozvon_count = 0
+    
     for uid, info in approved.items():
         data = stats.get(uid, {"zvonki": 0, "dozvon": 0, "sms": 0, "vkhodyashki": 0, "last_update": "никогда"})
         status = "✅" if info.get("active", True) else "❌"
         
+        zvonki = data.get('zvonki', data.get('calls', 0))
+        dozvon = data.get('dozvon', data.get('connect', 0))
+        sms = data.get('sms', data.get('smart', 0))
+        vkhodyashki = data.get('vkhodyashki', 0)
+        
         text += (
             f"{status} <b>{info['name']}</b>\n"
-            f"   📞{data['zvonki']} 📊{data['dozvon']}% 📱{data['sms']} 📥{data['vkhodyashki']}\n"
+            f"   📞{zvonki} 📊{dozvon}% 📱{sms} 📥{vkhodyashki}\n"
             f"   🕐 {data['last_update']}\n\n"
         )
-        if data.get('zvonki', 0) > 0:
+        if zvonki > 0:
             has_data = True
+            total_zvonki += zvonki
+            total_sms += sms
+            total_vkhodyashki += vkhodyashki
+            dozvon_sum += dozvon
+            dozvon_count += 1
+    
+    if has_data:
+        avg_dozvon = round(dozvon_sum / dozvon_count, 1) if dozvon_count > 0 else 0
+        text += "━━━━━━━━━━━━━━━━━━━━\n"
+        text += "<b>📊 ВСЕГО:</b>\n"
+        text += f"   📞{total_zvonki} 📊{avg_dozvon}% (среднее) 📱{total_sms} 📥{total_vkhodyashki}\n"
     
     if not has_data:
         text += "⚠️ <i>Нет данных сегодня</i>"
@@ -840,37 +867,46 @@ async def publish_stats(message: Message) -> None:
     has_data = False
     
     total_zvonki = 0
-    total_dozvon = 0
     total_sms = 0
     total_vkhodyashki = 0
+    dozvon_sum = 0
+    dozvon_count = 0
     
     for uid, data in stats.items():
-        if (uid in managers
-            and managers[uid].get("approved")
-            and managers[uid].get("active", True)
-            and data.get('zvonki', 0) > 0):
+        if not (uid in managers and managers[uid].get("approved") and managers[uid].get("active", True)):
+            continue
+        
+        zvonki = data.get('zvonki', data.get('calls', 0))
+        dozvon = data.get('dozvon', data.get('connect', 0))
+        sms = data.get('sms', data.get('smart', 0))
+        vkhodyashki = data.get('vkhodyashki', 0)
+        
+        if zvonki > 0:
             has_data = True
             name = managers[uid]['name']
             text += (
                 f"👤 <b>{name}</b>\n"
-                f"📞 Звонки: {data['zvonki']}\n"
-                f"📊 Дозвон: {data['dozvon']}%\n"
-                f"📱 СМС: {data['sms']}\n"
-                f"📥 Входяшки: {data['vkhodyashki']}\n\n"
+                f"📞 Звонки: {zvonki}\n"
+                f"📊 Дозвон: {dozvon}%\n"
+                f"📱 СМС: {sms}\n"
+                f"📥 Входяшки: {vkhodyashki}\n\n"
             )
-            total_zvonki += data['zvonki']
-            total_dozvon += data['dozvon']
-            total_sms += data['sms']
-            total_vkhodyashki += data['vkhodyashki']
+            total_zvonki += zvonki
+            total_sms += sms
+            total_vkhodyashki += vkhodyashki
+            dozvon_sum += dozvon
+            dozvon_count += 1
     
     if not has_data:
         await message.answer("📭 Нет данных")
         return
     
+    avg_dozvon = round(dozvon_sum / dozvon_count, 1) if dozvon_count > 0 else 0
+    
     text += "━━━━━━━━━━━━━━━━━━━━\n"
     text += "<b>📊 ВСЕГО:</b>\n"
     text += f"📞 Звонки: <b>{total_zvonki}</b>\n"
-    text += f"📊 Дозвон: <b>{total_dozvon}</b>\n"
+    text += f"📊 Дозвон: <b>{avg_dozvon}%</b> (среднее)\n"
     text += f"📱 СМС: <b>{total_sms}</b>\n"
     text += f"📥 Входяшки: <b>{total_vkhodyashki}</b>\n"
     
@@ -895,7 +931,7 @@ async def on_startup() -> None:
     
     if last_cleanup_date != today:
         old_data = any(
-            data.get('date') != today and data.get('zvonki', 0) > 0
+            data.get('date') != today and (data.get('zvonki', 0) > 0 or data.get('calls', 0) > 0)
             for data in stats.values()
         )
         if old_data:
