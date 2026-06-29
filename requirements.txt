@@ -1,0 +1,4 @@
+pytz
+aiogram
+gspread
+google-auth
